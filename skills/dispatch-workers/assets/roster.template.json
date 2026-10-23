@@ -1,0 +1,19 @@
+{
+  "project": "absolute path of the directory all workers operate in",
+  "directorSessionId": "id of the conversation running this playbook",
+  "createdAt": "ISO-8601",
+  "workers": [
+    {
+      "name": "local role name - identity lives here, keyed by sessionId (sidebar titles are not controllable)",
+      "role": "what this worker is responsible for",
+      "sessionId": "from create_chat_session",
+      "observedTitle": "title read back from read_chat_session, for the human to locate the session; may change on its own",
+      "task": "one-line summary of the assigned deliverable",
+      "inputs": ["absolute paths it reads"],
+      "expectedArtifact": "absolute path it must write",
+      "status": "pending | running | needs_attention | verified | failed",
+      "verifiedEvidence": "recomputed figure / file check that justified status=verified, empty until verified"
+    }
+  ],
+  "notes": "cross-worker decisions the director made, not worker output"
+}
