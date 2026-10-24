@@ -6,7 +6,9 @@
     {
       "name": "local role name - identity lives here, keyed by sessionId (sidebar titles are not controllable)",
       "role": "what this worker is responsible for",
-      "sessionId": "from create_chat_session",
+      "dispatchMode": "spawn | relay - spawn = we opened it via create_chat_session; relay = task handed to an already-open conversation via send_message_to_chat_session",
+      "preexisting": "true when the director did not create this session; such a worker must never be stopped without the human's word",
+      "sessionId": "from create_chat_session (spawn) or list_chat_sessions (relay)",
       "observedTitle": "title read back from read_chat_session, for the human to locate the session; may change on its own",
       "task": "one-line summary of the assigned deliverable",
       "inputs": ["absolute paths it reads"],
