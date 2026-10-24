@@ -5,8 +5,8 @@ description: Orchestrate independent Qoder conversations as full-tool workers - 
 
 # Dispatch Workers
 
-Version 0.1.2 — 0.1.1 added the Prerequisites note and Relay mode; 0.1.2 adds the measured CLI-driven
-fallback and corrects two constraint claims about callback/text timing.
+Version 0.1.3 — 0.1.1 added Prerequisites and Relay mode, 0.1.2 the measured CLI-driven fallback,
+0.1.3 the measured limits of two-way conversation (call mode).
 
 ## Prerequisites (read first: failure here is silent)
 
@@ -151,6 +151,36 @@ Costs and traps, all measured rather than assumed:
 
 Everything else transfers unchanged: roster keyed by `sessionId`, absolute paths, independent disk
 verification, and no acceptance before the artifact is recomputed.
+
+## Call mode: two-way conversation (measured)
+
+A worker can talk **back**, so a director and one worker can hold a real conversation without the human
+injecting a message at each step. Measured chain: director→worker (relay) → worker→director
+(`send_message_to_chat_session` back to the delegator) → director→worker again. The inbound reply lands
+in the director as an ordinary queued turn.
+
+Two facts define the shape, both measured rather than assumed:
+
+1. **The topology is a star, not a mesh.** Replying to the conversation that delegated the current turn
+   is allowed. Forwarding to a *third* conversation is blocked by the platform, with this refusal
+   returned to the worker verbatim:
+   `由其他会话委派的任务必须直接执行，不能继续向其他会话转发消息。`
+   So build conversations as director↔worker pairs; do not design a worker-to-worker relay, and do not
+   chain casts through a worker.
+2. **An inbound agent message carries no sender id.** It arrives as `role: "user"` with
+   `turnId = agent-message:<hash>`; nothing in the payload names who sent it. A conversation that must
+   reply therefore needs the address handed to it explicitly — put a `REPLY-TO=<sessionId>` line in the
+   prompt (and require the worker to copy it verbatim into its reply). This works; guessing from
+   `list_chat_sessions` does not, because a worker can see **every** conversation on the machine,
+   including unrelated cold ones — so never let a worker pick its own reply target.
+
+To hold a call: seed the worker with its reply address and a turn budget ("reply to `<director id>` with
+exactly one message, then stop"), then answer it with `send_message_to_chat_session`. Keep the budget
+explicit in every round — two agents with free rein will keep each other running, and only the human can
+`stop_chat_session` a runaway.
+
+Note `wait_chat_sessions` refuses the director's own id:
+`不能等待当前 ChatSession；当前 Turn 会因此无法结束。` Use `list_chat_sessions` for a self snapshot.
 
 ## Lifecycle
 
