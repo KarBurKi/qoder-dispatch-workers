@@ -1,6 +1,7 @@
 {
   "project": "absolute path of the directory all workers operate in",
   "directorSessionId": "id of the conversation running this playbook",
+  "engine": "primitives | cli - primitives = the chat-session MCP tools (Desktop App only); cli = qodercli -p/--resume driven through Bash, the measured fallback where those tools are absent",
   "createdAt": "ISO-8601",
   "workers": [
     {
@@ -8,7 +9,7 @@
       "role": "what this worker is responsible for",
       "dispatchMode": "spawn | relay - spawn = we opened it via create_chat_session; relay = task handed to an already-open conversation via send_message_to_chat_session",
       "preexisting": "true when the director did not create this session; such a worker must never be stopped without the human's word",
-      "sessionId": "from create_chat_session (spawn) or list_chat_sessions (relay)",
+      "sessionId": "from create_chat_session (engine=primitives) or the uuid the director pre-assigned via --session-id (engine=cli)",
       "observedTitle": "title read back from read_chat_session, for the human to locate the session; may change on its own",
       "task": "one-line summary of the assigned deliverable",
       "inputs": ["absolute paths it reads"],

@@ -5,7 +5,8 @@ description: Orchestrate independent Qoder conversations as full-tool workers - 
 
 # Dispatch Workers
 
-Version 0.1.1 — adds the Prerequisites note and Relay mode.
+Version 0.1.2 — 0.1.1 added the Prerequisites note and Relay mode; 0.1.2 adds the measured CLI-driven
+fallback and corrects two constraint claims about callback/text timing.
 
 ## Prerequisites (read first: failure here is silent)
 
@@ -36,9 +37,10 @@ Self-check, in order of reliability:
    that inference returns a false negative even on a machine where the skill runs.
 
 Passing structural validation, appearing in `/skills list`, or invoke returning this document all mean
-nothing about callability. If the primitives are absent, neither spawn nor relay can execute: treat
-this skill as methodology only, and fall back to disk-mediated handoff (conversations read and write
-agreed files in a shared directory).
+nothing about callability. If the primitives are absent, this MCP-primitive path cannot run — but the
+orchestration itself can still be done: see **Fallback: CLI-driven dispatch** below. Only if that is also
+unavailable should you fall back to disk-mediated handoff (conversations read and write agreed files in
+a shared directory).
 
 ## Overview
 
@@ -102,6 +104,54 @@ Honest split between what was measured and what was not:
   handoff from the human speaking by role alone — it has only the declared header. Relaying into a
   conversation you do not control is effectively writing into its user input. Don't.
 
+## Fallback: CLI-driven dispatch (no primitives needed)
+
+The primitives belong to the Desktop App, but orchestration does not. `qodercli` carries session identity
+and resume, so a director with a shell can run the same chain. Measured on `qodercli 1.1.78`:
+
+```bash
+# 1. Spawn — the director pre-assigns the id so it can go straight into the roster
+qodercli -p --output-format json --session-id <uuid> \
+  -w "C:\\absolute\\worker\\dir" --permission-mode accept_edits \
+  "Write C:\\absolute\\worker\\dir\\probe1.txt containing CLI-PROBE-1. Reply with one line: path and content."
+#    stdout is one JSON object: session_id / result / num_turns / duration_ms / total_credits
+#    measured: 12.8 s, num_turns 2, 0.162 credits, the 11-byte file was really on disk
+
+# 2. Relay — resume the same id; the messenger header is still mandatory
+qodercli -p --output-format json --resume <same session id> --permission-mode accept_edits \
+  "[Handoff, not a continuation] I am another conversation (the director). First answer: what file and string did your last task write? Second, new task: ..."
+#    measured: the worker recalled probe1.txt / CLI-PROBE-1 correctly, then produced the new artifact
+
+# 3. Cast discovery
+qodercli --list-sessions
+```
+
+Costs and traps, all measured rather than assumed:
+
+- CLI sessions do **not** appear in the App/IDE sidebar, and `--list-sessions` groups by workspace — its
+  own header reads `Available sessions for this project`. Identity lives in the roster, as always.
+- Calling the CLI from **inside** a Qoder conversation fails outright:
+  `sdk_invalid_args: Agent SDK entrypoint env is set but required flags are missing`, because the host's
+  `QODER_AGENT_SDK_ENTRYPOINT` and friends are inherited. Strip them and normal behaviour returns:
+
+  ```bash
+  env -u QODER_AGENT_SDK_ENTRYPOINT -u QODER_AGENT_SDK_DAEMON \
+      -u QODER_AGENT_SDK_VERSION -u QODER_SDK_AUTH_PAYLOAD_FILE qodercli -p ...
+  ```
+
+  A human's own terminal never sees this.
+- There is no supervise callback to answer, so permissions must be granted up front (`--permission-mode`,
+  `--allowed-tools`); otherwise headless runs silently refuse — check `permission_denials`.
+- Cost is observable per call; `total_credits` ranged from 0.02 to 0.16 for the same shape of task here.
+- **Unverified**: whether the older `qodercli 1.0.34` bundled by an IDE install supports `--session-id`
+  and `--list-sessions` (`-p` / `--resume` are baseline). The CLI has its own `update` subcommand, so it
+  can be upgraded **without touching the IDE** — which is exactly what sidesteps a stale desktop build.
+- Same-source corollary: grepping the 220 MB `qodercli` binary gives **zero hits** for all eight primitive
+  names. Installing a CLI does not grant the primitives; it offers an equivalent chain instead.
+
+Everything else transfers unchanged: roster keyed by `sessionId`, absolute paths, independent disk
+verification, and no acceptance before the artifact is recomputed.
+
 ## Lifecycle
 
 1. **Plan the cast.** Decide worker roles, one bounded deliverable each. Write
@@ -146,9 +196,14 @@ worker); treat these as facts, not guesses.
 
 - A worker's shell starts in its **own** directory (`Documents/Qoder/<date>/<sessionId>`), not the
   director's. Relative paths in your prompt resolve against that. Always hand over absolute paths.
-- `wait_chat_sessions`' `lastAssistantText` is **not dependable**: on the same session it returned the
-  body on the first turn and `null` on the relay turn. Always follow a `turn_completed` with
-  `read_chat_session`.
+- `wait_chat_sessions`' `lastAssistantText` is **not dependable**: for one session at the *same*
+  `revision`, it was `null` right after the turn ended and fully populated in a `timeoutMs: 0` snapshot
+  a few minutes later. It is written asynchronously, so `null` means "not yet", not "absent". To get the
+  body, always call `read_chat_session`.
+- **Supervise callbacks arrive late and can duplicate.** On one probe session the first turn's callback
+  (completed 23:47:58) landed at 00:03 and the relay turn's (23:48:44) at 00:05 — over fifteen minutes
+  late, delivered as a backlogged pair, in order. A callback is a signal to *go read*, not a new fact:
+  compare `revision` and the artifact's mtime before concluding anything happened.
 - A relay message is stored in the target as `role: "user"`, with `turnId` prefixed `agent-message:`.
   It takes the target's user slot, so the target cannot tell agent handoff from human speech by role —
   only by your declared header.

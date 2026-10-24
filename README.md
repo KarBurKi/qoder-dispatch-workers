@@ -32,7 +32,57 @@ Windows。该台由另一位使用者实测并报缺这 8 个原语。两条产�
    这条推理在有能力的机器上照样会给出否定结果。
 
 结构校验通过、skill 出现在列表里、invoke 能返回文档，**都不代表原语可调用**。缺失时 spawn 与 relay
-都跑不起来，本 skill 只能当方法论参考；跨会话协作请退回磁盘中转（例如各会话读写同一目录下的约定文件）。
+都跑不起来；别急着放弃，先看下一节那条**已实测**的退路（用 Qoder CLI 换执行层），再不行才退回磁盘中转
+（各会话读写同一目录下的约定文件）。
+
+## 退路：CLI 模式（无原语也能编排，已实测）
+
+原语只住在桌面 App 形态里，但**编排这件事本身不依赖它们**：Qoder CLI 自带会话身份与续话能力，
+导演用 shell 就能把「开工人 → 投任务 → 等回合 → 收产出」这条链跑完整。本机 `qodercli 1.1.78` 实测：
+
+```bash
+# 1. 开工人（导演预定 session id，方便直接写进 roster，不用等返回值）
+qodercli -p --output-format json \
+  --session-id <预定的 uuid> \
+  -w "C:\\绝对\\路径\\工人工作目录" \
+  --permission-mode accept_edits \
+  "任务：在 C:\\绝对\\路径\\probe1.txt 写入 CLI-PROBE-1，只回一行：路径与内容"
+#   → stdout 是一段 JSON：session_id / result / num_turns / duration_ms / total_credits
+#     本次实测 12.8 秒、num_turns 2、credits 0.162，文件 11 字节确实落盘
+
+# 2. 接力（relay 的等价物）：同一个 id 续话，传话头照旧要写
+qodercli -p --output-format json --resume <同一个 session id> \
+  --permission-mode accept_edits "【传话，不是续任务】我是另一条会话（导演）……第一，先回答……第二，新任务……"
+#   → 实测工人先答对了上一条写的文件名与内容串，再完成新任务，产出落盘
+
+# 3. 发现演员表
+qodercli --list-sessions
+```
+
+代价与坑，都是实测出来的，不是推测：
+
+- **CLI 会话不进 App／IDE 侧栏**，`--list-sessions` 还按项目目录分组（输出原文写着 `for this project`），
+  所以看不了实时界面，身份只能靠 roster 里的 `sessionId`。
+- **从 Qoder 会话内部调 CLI 会被环境绊倒**：我第一次跑直接报
+  `sdk_invalid_args: Agent SDK entrypoint env is set but required flags are missing`，
+  因为继承了宿主的 `QODER_AGENT_SDK_ENTRYPOINT` 一类变量。这样前缀就恢复普通 CLI 行为：
+
+  ```bash
+  env -u QODER_AGENT_SDK_ENTRYPOINT -u QODER_AGENT_SDK_DAEMON \
+      -u QODER_AGENT_SDK_VERSION -u QODER_SDK_AUTH_PAYLOAD_FILE qodercli -p ...
+  ```
+
+  主人自己的终端里不会遇到；导演会话里代跑必须记得这一手。
+- **权限没有监督回调可放行**，只能靠 `--permission-mode`／`--allowed-tools` 事先给够，
+  否则 headless 下会静默拒做（`permission_denials` 字段可查）。
+- 成本可观测：`total_credits` 每条都有，实测同一类小任务在 0.02 到 0.16 之间浮动。
+- **未验证**：另一台机器自带的 `qodercli 1.0.34` 是否也有 `--session-id`／`--list-sessions` 这些旗标
+  （`-p` 与 `--resume` 是基础能力，其余我不敢替它打包票）。CLI 有独立的 `update` 子命令，
+  可以只升 CLI 而**不动 IDE 本体**——这正好绕开「runtime 一直在滚、IDE 本体停在旧构建」那个困局。
+- 顺带一条同源结论：`qodercli` 二进制（220 MB）里那 8 个原语名**全部零命中**。所以别指望
+  「装了 CLI 就有原语」；CLI 给的是等价链，不是同一套工具。
+
+方法论部分（roster 以 `sessionId` 为身份键、绝对路径、独立复算磁盘产出、验收前不算完成）在 CLI 模式下一字不改地适用。
 
 ## 安装
 
@@ -114,8 +164,13 @@ relay 的代价与未验证项，实测与推测分开写：
 以下来自两次真实跑批（一次两工人并发 spawn，一次 spawn→idle→relay 接力），不是读代码推断：
 
 - 工人 shell 的起始目录是它自己的 `Documents/Qoder/<date>/<sessionId>`，**不是派单方目录**，一律传绝对路径。
-- `wait_chat_sessions` 的 `lastAssistantText` **不可依赖**：同一条会话上，首回合给了正文，
-  relay 后的第二回合回 `null`。稳定做法是拿到 `turn_completed` 后再走一次 `read_chat_session`。
+- `wait_chat_sessions` 的 `lastAssistantText` **不可依赖**：同一条会话同一个 revision，回合刚结束时该字段是
+  `null`，十几分钟后 `timeoutMs: 0` 的快照里同一字段已填上完整正文。它是异步补写的，
+  `null` 只代表「当时还没写好」。要正文一律再走一次 `read_chat_session`。
+- **监督回调会迟到、会重复**：一条探测会话的首回合（完成于 23:47:58）在 00:03 才推给导演，
+  relay 回合（23:48:44）在 00:05 才到，滞后一刻钟以上、成对补投且顺序不乱。
+  所以回调只当「去读一次」的信号，不当新事实——拿到通知先比 `revision` 与磁盘 mtime，
+  再判断是不是旧回合的重复投递。
 - `turn_completed` / `idle` 只描述执行状态，不等于工作被验收；必须独立复算磁盘产出。
 - `node` 可能不在 Bash 的 PATH 中（实测 `command not found`），优先 `awk` 或给解释器绝对路径。
 - `wait_chat_sessions` 上限 8 个目标，且不能包含当前会话。
@@ -132,5 +187,6 @@ Relay 不是从别处的 diff 合进来的。另一台机器的使用者先按�
 
 ## 状态
 
-Skill 本体在 `skills/dispatch-workers/`，版本 `0.1.1`（前置要求 + Relay 模式）。
+Skill 本体在 `skills/dispatch-workers/`，版本 `0.1.2`（0.1.1 的前置要求与 Relay 模式，加 0.1.2 的
+CLI 退路与两条回调实测）。
 未附带 LICENSE 文件，需要的话按你的偏好补。
